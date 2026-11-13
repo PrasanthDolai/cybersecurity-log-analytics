@@ -1,0 +1,4 @@
+Model,Accuracy (%),F1-Score (%),Precision (%),Recall (%),Training Time (s)
+Logistic Regression,86.84,86.69,87.63,86.84,14.09
+Decision Tree Classifier,97.31,97.06,97.72,97.31,4.19
+Random Forest Classifier,96.99,96.83,97.06,96.99,11.39

@@ -1,0 +1,8 @@
+target_port,attack_cat,attack_events
+80,DoS attacks-Hulk,461912
+21,FTP-BruteForce,193360
+22,SSH-Bruteforce,187559
+21,DoS attacks-SlowHTTPTest,139890
+80,DoS attacks-GoldenEye,41508
+80,DoS attacks-Slowloris,10990
+21,SSH-Bruteforce,30

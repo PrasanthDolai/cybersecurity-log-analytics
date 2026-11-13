@@ -1,90 +1,118 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, when, trim
+from pyspark.sql import functions as F
+from pyspark.sql.types import DoubleType
 
 def main():
-    # 1. Start Apache Spark Session (explicitly set local filesystem so it doesn't look for HDFS on port 9000)
-    spark = SparkSession.builder \
-        .appName("CybersecurityLogETLAndAnalytics") \
-        .master("local[*]") \
-        .config("spark.hadoop.fs.defaultFS", "file:///") \
+    spark = (
+        SparkSession.builder
+        .appName("CSE-CIC-IDS2018_HDFS_ETL_Analytics")
+        .config("spark.driver.memory", "3g")
+        .config("spark.sql.shuffle.partitions", "8")
         .getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
+    )
+    spark.sparkContext.setLogLevel("WARN")
 
-    base_dir = os.path.abspath(".")
-    train_path = f"file://{base_dir}/data/raw/UNSW_NB15_training-set.csv"
-    test_path = f"file://{base_dir}/data/raw/UNSW_NB15_testing-set.csv"
-    output_path = f"file://{base_dir}/data/processed/cyber_logs.parquet"
+    hdfs_raw_path = "hdfs://localhost:9000/cybersecurity/raw/*.csv"
+    hdfs_parquet_path = "hdfs://localhost:9000/cybersecurity/processed/clean_logs.parquet"
 
-    print("\n--- [1/4] Ingesting Raw Cybersecurity Logs into Spark ---")
-    train_df = spark.read.csv(train_path, header=True, inferSchema=True)
-    test_df = spark.read.csv(test_path, header=True, inferSchema=True)
+    print(f"--- [1/3] Reading 1+ GB CSE-CIC-IDS2018 Dataset from HDFS: {hdfs_raw_path} ---")
+    raw_df = spark.read.option("header", "true").option("inferSchema", "false").csv(hdfs_raw_path)
 
-    train_df = train_df.withColumn("dataset_split", when(col("id").isNotNull(), "train"))
-    test_df = test_df.withColumn("dataset_split", when(col("id").isNotNull(), "test"))
-    full_df = train_df.unionByName(test_df)
+    # Filter out repeated header rows embedded inside CSVs and null labels
+    df = raw_df.filter((F.col("Label").isNotNull()) & (F.col("Label") != "Label"))
 
-    print(f"Total Cybersecurity Log Records Ingested: {full_df.count():,}")
+    # Select core network flow features for analytics and ML
+    selected_cols = {
+        "Dst Port": "dst_port",
+        "Protocol": "protocol",
+        "Flow Duration": "flow_duration",
+        "Tot Fwd Pkts": "tot_fwd_pkts",
+        "Tot Bwd Pkts": "tot_bwd_pkts",
+        "TotLen Fwd Pkts": "totlen_fwd_pkts",
+        "TotLen Bwd Pkts": "totlen_bwd_pkts",
+        "Fwd Pkt Len Max": "fwd_pkt_len_max",
+        "Bwd Pkt Len Max": "bwd_pkt_len_max",
+        "Flow Byts/s": "flow_byts_s",
+        "Flow Pkts/s": "flow_pkts_s",
+        "Fwd IAT Mean": "fwd_iat_mean",
+        "Bwd IAT Mean": "bwd_iat_mean",
+        "SYN Flag Cnt": "syn_flag_cnt",
+        "RST Flag Cnt": "rst_flag_cnt",
+        "ACK Flag Cnt": "ack_flag_cnt",
+        "Init Fwd Win Byts": "init_fwd_win_byts",
+        "Label": "attack_cat"
+    }
 
-    # 2. Data Cleaning & Standardization
-    print("\n--- [2/4] Cleaning & Standardizing Log Fields ---")
-    clean_df = full_df \
-        .withColumn("service", when(col("service") == "-", "unknown").otherwise(col("service"))) \
-        .withColumn("attack_cat", trim(col("attack_cat"))) \
-        .withColumn("attack_cat", when(col("attack_cat").isNull() | (col("attack_cat") == ""), "Normal").otherwise(col("attack_cat"))) \
-        .na.fill(0)
+    exprs = []
+    for orig_col, clean_col in selected_cols.items():
+        if clean_col == "attack_cat":
+            exprs.append(F.trim(F.col(orig_col)).alias(clean_col))
+        else:
+            # Cast numeric columns safely and replace NaN/Infinity with 0.0
+            casted = F.col(orig_col).cast(DoubleType())
+            cleaned = (
+                F.when(casted.isNull() | F.isnan(casted) | (casted == float("inf")) | (casted == float("-inf")), 0.0)
+                .otherwise(casted)
+                .alias(clean_col)
+            )
+            exprs.append(cleaned)
 
-    # 3. Distributed Storage: Save as Partitioned Parquet
-    print(f"\n--- [3/4] Writing Cleaned Logs to Distributed Parquet Format ---")
-    clean_df.write.mode("overwrite").partitionBy("attack_cat").parquet(output_path)
+    clean_df = df.select(*exprs).withColumn(
+        "is_attack", F.when(F.col("attack_cat") == "Benign", 0).otherwise(1)
+    )
 
-    # 4. Distributed Querying using Spark SQL
-    print("\n--- [4/4] Running Distributed Security Analytics Queries (Spark SQL) ---")
-    parquet_df = spark.read.parquet(output_path)
-    parquet_df.createOrReplaceTempView("cyber_logs")
+    total_records = clean_df.count()
+    print(f"Total Valid Network Flow Records Ingested from HDFS: {total_records:,}")
 
-    print("\n[Query 1] Attack Category Distribution & Average Bytes Transferred:")
+    # Write partitioned Parquet back to HDFS
+    print(f"--- [2/3] Writing Partitioned Parquet to HDFS: {hdfs_parquet_path} ---")
+    clean_df.write.mode("overwrite").partitionBy("attack_cat").parquet(hdfs_parquet_path)
+
+    # Distributed Spark SQL Threat Analytics
+    print("--- [3/3] Executing Distributed Spark SQL Threat Queries ---")
+    clean_df.createOrReplaceTempView("network_flows")
+
+    print("\n1. Attack Category Distribution (CSE-CIC-IDS2018):")
     spark.sql("""
-        SELECT 
-            attack_cat AS Threat_Category,
-            COUNT(*) AS Event_Count,
-            ROUND(AVG(sbytes), 2) AS Avg_Source_Bytes,
-            ROUND(AVG(dbytes), 2) AS Avg_Dest_Bytes,
-            ROUND(AVG(rate), 2) AS Avg_Packet_Rate
-        FROM cyber_logs
+        SELECT
+            attack_cat,
+            COUNT(*) AS flow_count,
+            ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS pct_traffic,
+            ROUND(AVG(flow_duration), 2) AS avg_duration_us,
+            ROUND(AVG(totlen_fwd_pkts), 2) AS avg_fwd_bytes
+        FROM network_flows
         GROUP BY attack_cat
-        ORDER BY Event_Count DESC
+        ORDER BY flow_count DESC
     """).show(truncate=False)
 
-    print("\n[Query 2] Top Targeted Network Services Under Attack:")
+    print("2. Top Targeted Destination Ports Under Cyberattack:")
     spark.sql("""
-        SELECT 
-            service AS Network_Service,
-            proto AS Protocol,
-            COUNT(*) AS Attack_Count
-        FROM cyber_logs
-        WHERE label = 1
-        GROUP BY service, proto
-        ORDER BY Attack_Count DESC
+        SELECT
+            CAST(dst_port AS INT) AS target_port,
+            attack_cat,
+            COUNT(*) AS attack_events
+        FROM network_flows
+        WHERE is_attack = 1
+        GROUP BY dst_port, attack_cat
+        ORDER BY attack_events DESC
         LIMIT 10
     """).show(truncate=False)
 
-    print("\n[Query 3] High-Volume Traffic Anomalies (Potential DoS / Flood Bursts):")
+    print("3. High-Volume Burst Anomalies (Forward Bytes > 50,000):")
     spark.sql("""
-        SELECT 
-            attack_cat AS Threat_Category,
-            proto AS Protocol,
-            COUNT(*) AS Burst_Events,
-            MAX(sbytes) AS Max_Bytes_Spike
-        FROM cyber_logs
-        WHERE sbytes > 50000
-        GROUP BY attack_cat, proto
-        ORDER BY Burst_Events DESC
-        LIMIT 10
+        SELECT
+            attack_cat,
+            COUNT(*) AS high_byte_bursts,
+            ROUND(MAX(totlen_fwd_pkts), 2) AS max_fwd_bytes
+        FROM network_flows
+        WHERE totlen_fwd_pkts > 50000
+        GROUP BY attack_cat
+        ORDER BY high_byte_bursts DESC
     """).show(truncate=False)
 
     spark.stop()
-    print("\nETL & Distributed SQL Analytics Complete!")
+    print("HDFS ETL & Spark SQL Analytics Completed Successfully!")
 
 if __name__ == "__main__":
     main()

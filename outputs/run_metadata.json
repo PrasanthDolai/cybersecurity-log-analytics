@@ -1,0 +1,9 @@
+{
+  "dataset": "CSE-CIC-IDS2018 (HDFS Distributed Storage)",
+  "hdfs_raw_path": "hdfs://localhost:9000/cybersecurity/raw/",
+  "hdfs_size_gb": 1.02,
+  "total_records": 3145724,
+  "train_records": 2516558,
+  "test_records": 629166,
+  "kmeans_silhouette": 0.4824
+}

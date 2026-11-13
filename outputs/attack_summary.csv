@@ -1,0 +1,8 @@
+attack_cat,flow_count,avg_duration_us,avg_fwd_bytes,avg_pkts_per_sec
+Benign,2110475,10747100.97,536.38,29614.16
+DoS attacks-Hulk,461912,301755.61,20.45,1208.64
+FTP-BruteForce,193360,3.8,0.0,1189123.61
+SSH-Bruteforce,187589,183349.68,967.32,158521.13
+DoS attacks-SlowHTTPTest,139890,4.9,0.0,734700.09
+DoS attacks-GoldenEye,41508,11233440.51,351.15,8.73
+DoS attacks-Slowloris,10990,71980336.27,1091.53,65291.94
