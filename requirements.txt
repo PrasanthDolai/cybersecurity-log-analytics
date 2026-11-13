@@ -1,0 +1,7 @@
+pyspark>=3.5.0
+pandas<3.0.0
+numpy
+scikit-learn
+streamlit
+plotly
+pyarrow
